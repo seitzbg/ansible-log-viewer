@@ -1,0 +1,16 @@
+# local config (copy config.toml.example and edit; never commit your own)
+config.toml
+
+# ansible run logs
+*.log
+*.err
+!examples/logs/*.log
+!examples/logs/*.err
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# uv
+.venv/

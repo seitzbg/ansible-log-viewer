@@ -1,0 +1,63 @@
+PLAY [Patch and converge all hosts] ********************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [web01.example.net]
+ok: [web02.example.net]
+ok: [db01.example.net]
+ok: [cache01.example.net]
+ok: [proxy01.example.net]
+ok: [build01.example.net]
+ok: [monitor01.example.net]
+ok: [backup01.example.net]
+ok: [localhost]
+
+TASK [apt : Update package cache] **********************************************
+ok: [web01.example.net]
+ok: [web02.example.net]
+ok: [db01.example.net]
+ok: [cache01.example.net]
+ok: [proxy01.example.net]
+ok: [build01.example.net]
+ok: [monitor01.example.net]
+ok: [backup01.example.net]
+
+TASK [docker : Deploy compose stacks] ******************************************
+changed: [web01.example.net]
+changed: [web02.example.net]
+changed: [db01.example.net]
+changed: [cache01.example.net]
+changed: [proxy01.example.net]
+changed: [build01.example.net]
+changed: [monitor01.example.net]
+changed: [backup01.example.net]
+
+
+TASK [Run facts.py mirror] *****************************************************
+ok: [localhost] => changed=false 
+  mirror:
+  - skipped 0 cache entries without ansible_distribution
+  - mirrored 8 hosts to redis + /home/you/ansible/facts-snapshot
+
+
+PLAY RECAP *********************************************************************
+web01.example.net         : ok=40    changed=0    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+web02.example.net         : ok=43    changed=3    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+db01.example.net          : ok=40    changed=0    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+cache01.example.net       : ok=40    changed=0    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+proxy01.example.net       : ok=43    changed=1    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+build01.example.net       : ok=40    changed=0    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+monitor01.example.net     : ok=40    changed=0    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+backup01.example.net      : ok=43    changed=2    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+localhost                 : ok=6    changed=1    unreachable=0    failed=0    skipped=2    rescued=0    ignored=0
+
+TASKS RECAP ********************************************************************
+Sunday 31 May 2026  06:03:14 +0000 (0:00:03.412)	0:03:12.451 *********************
+===============================================================================
+apt : Upgrade all packages ----------------------------------------------- 84.21s
+Gathering Facts ---------------------------------------------------------- 22.34s
+docker : Deploy compose stacks ------------------------------------------- 18.92s
+grafana-alloy : Install agent -------------------------------------------- 12.07s
+Run facts.py mirror ------------------------------------------------------- 3.41s
+apt : Update package cache ------------------------------------------------ 2.88s
+install-aliases : Drop shell aliases -------------------------------------- 0.94s
+

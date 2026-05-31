@@ -1,0 +1,2 @@
+[WARNING]: Could not match supplied host pattern, ignoring: staging
+[WARNING]: sftp transfer mechanism failed on [db01.example.net]. Use ANSIBLE_DEBUG=1

@@ -1,0 +1,47 @@
+# Ansible Log Viewer — shared config for all three tools.
+#
+# Copy to ~/.config/ansible-log-viewer/config.toml and edit, or point
+# $ALV_CONFIG at this file. Every key is optional; the defaults shown are what
+# you get with no config at all. The ALV_HOME / ALV_LOG_DIR / ALV_CACHE_DIR /
+# ALV_SNAPSHOT_DIR / ALV_THEME environment variables override the matching key.
+
+# Root of your Ansible repo (where playbooks/ and inventory/ live).
+# Default: the current working directory.
+ansible_home = "~/ansible"
+
+# Where run-daily.py writes logs and the viewer reads them.
+# Default: ~/.ansible/logs
+# log_dir = "~/.ansible/logs"
+
+# Viewer color theme. One of:
+#   catppuccin-mocha · tokyonight-night · oxocarbon-dark · moonfly ·
+#   vision · cyberpunk-2077
+theme = "catppuccin-mocha"
+
+# ── run-daily.py ──────────────────────────────────────────────────────────────
+# Playbook the daily run executes (relative to ansible_home, or absolute).
+# playbook = "playbooks/daily.yml"
+# Optional inventory pattern passed to --limit. Empty = every host.
+# limit = "all:!switches"
+
+# Discord ping on failed runs (optional). $DISCORD_WEBHOOK_URL overrides this.
+# Omit the whole table to disable notifications.
+# [notify]
+# discord_webhook_url = "https://discord.com/api/webhooks/…"
+# name = "ansible-daily"   # bot username / title prefix
+
+# ── facts.py (optional fact store) ─────────────────────────────────────────────
+# Ansible jsonfile fact cache (set fact_caching = jsonfile in ansible.cfg).
+# cache_dir = "~/ansible/.ansible-facts"
+# Where curated per-host YAML snapshots are written (the viewer reads these to
+# enrich its Hosts/Facts tabs).
+# snapshot_dir = "~/ansible/facts-snapshot"
+# Playbook `facts.py refresh` runs to (re)gather facts.
+# facts_playbook = "playbooks/gather-all-facts.yml"
+
+# Optional redis cache for facts.py. Leave out to use the jsonfile cache only.
+# REDIS_HOST / REDIS_PORT / REDIS_PASSWORD env vars override these.
+# [redis]
+# host = "127.0.0.1"
+# port = 6379
+# password = ""

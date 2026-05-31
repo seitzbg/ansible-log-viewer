@@ -1,0 +1,10 @@
+ansible_architecture: x86_64
+ansible_distribution: Rocky
+ansible_distribution_release: Blue Onyx
+ansible_distribution_version: '9.4'
+ansible_kernel: 5.14.0-427.el9.x86_64
+ansible_memtotal_mb: 8192
+ansible_pkg_mgr: dnf
+ansible_processor_vcpus: 4
+primary_ipv4: 192.0.2.61
+zfs_present: True

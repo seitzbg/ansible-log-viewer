@@ -1,0 +1,10 @@
+ansible_architecture: x86_64
+ansible_distribution: Debian
+ansible_distribution_release: bookworm
+ansible_distribution_version: '12'
+ansible_kernel: 6.1.0-21-amd64
+ansible_memtotal_mb: 2048
+ansible_pkg_mgr: apt
+ansible_processor_vcpus: 2
+primary_ipv4: 192.0.2.11
+zfs_present: False

@@ -1,0 +1,10 @@
+ansible_architecture: x86_64
+ansible_distribution: Ubuntu
+ansible_distribution_release: noble
+ansible_distribution_version: '24.04'
+ansible_kernel: 6.8.0-31-generic
+ansible_memtotal_mb: 4096
+ansible_pkg_mgr: apt
+ansible_processor_vcpus: 2
+primary_ipv4: 192.0.2.22
+zfs_present: False
