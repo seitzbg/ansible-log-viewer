@@ -32,6 +32,12 @@ changed: [monitor01.example.net]
 changed: [backup01.example.net]
 
 
+TASK [postgresql : Restart PostgreSQL service] *********************************
+fatal: [db01.example.net]: FAILED! => {"changed": false, "msg": "Job for postgresql.service failed because the control process exited with error code. See 'systemctl status postgresql.service' and 'journalctl -xeu postgresql.service\" for details."}
+
+TASK [postgresql : Reload config] **********************************************
+skipping: [db01.example.net]
+
 TASK [Run facts.py mirror] *****************************************************
 ok: [localhost] => changed=false 
   mirror:

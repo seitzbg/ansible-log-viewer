@@ -9,7 +9,7 @@ break?" These tools fix that: `run-daily.py` runs the playbook and writes a
 timestamped log; `view-logs.py` turns those logs into a browsable history with
 per-host drill-down, task timings, warnings, and run-over-run diffs.
 
-![Summary tab](screenshots/01-summary-run.svg)
+![Summary tab](screenshots/01-summary.svg)
 
 Everything is a self-contained [`uv`](https://docs.astral.sh/uv/) script with
 inline dependencies — no virtualenv to manage, no `pip install` step.
@@ -81,8 +81,6 @@ Environment variables override the file — handy for one-off runs:
 ./view-logs.py
 ```
 
-![Hosts tab](screenshots/02-hosts-tab.svg)
-
 | Key | Action |
 |---|---|
 | `↑`/`↓`, `j`/`k` | move through runs |
@@ -99,7 +97,45 @@ first), **Facts** (the fact-mirror outcome), **Raw Log**, and **Warnings**
 (from the `.err` file). Selecting **All Runs** shows aggregate stats, the
 most-failing hosts, and a success trend.
 
-![Theme switcher](screenshots/07-theme-switcher.svg)
+### Screens
+
+**Hosts** — every host's `PLAY RECAP`, colored by status and enriched with facts
+(distro / version / kernel / CPU / RAM / IP). `f` cycles the filter, `enter` drills in:
+
+![Hosts tab](screenshots/02-hosts.svg)
+
+**Host drill-down** — `enter` on a host opens just that host's log lines with a live
+search box (here, db01's failed PostgreSQL task on a partial run):
+
+![Host log modal](screenshots/03-host-log-modal.svg)
+
+**Tasks** — per-task durations from the `profile_tasks` callback, longest first:
+
+![Tasks tab](screenshots/04-tasks.svg)
+
+**Facts** — outcome of the optional `facts.py mirror` step for the run:
+
+![Facts tab](screenshots/05-facts.svg)
+
+**Raw Log** — the full `ansible-playbook` output with ANSI colors preserved:
+
+![Raw Log tab](screenshots/06-raw-log.svg)
+
+**Warnings** — whatever ansible wrote to stderr for that run:
+
+![Warnings tab](screenshots/07-warnings.svg)
+
+**All Runs** — aggregate success rate, most-failing hosts, and a run-over-run trend:
+
+![All Runs aggregate](screenshots/08-all-runs.svg)
+
+**Themes** — `t` opens a live picker; six themes ship (Catppuccin Mocha, Tokyo Night,
+Oxocarbon, Moonfly, Vision, Cyberpunk 2077):
+
+![Theme switcher](screenshots/09-theme-switcher.svg)
+![Tokyo Night theme](screenshots/10-theme-tokyonight.svg)
+![Cyberpunk 2077 theme](screenshots/11-theme-cyberpunk.svg)
+![Oxocarbon theme](screenshots/12-theme-oxocarbon.svg)
 
 ### How it finds runs (log-format contract)
 
@@ -119,19 +155,95 @@ an optional matching `.err`) and parses the standard `ansible-playbook` output:
 `run-daily.py` produces exactly this layout, but any tool that writes
 `daily-*.log` files with normal Ansible output will work.
 
-## The daily runner
+## The daily runner — `run-daily.py`
 
-```bash
-./run-daily.py
+`run-daily.py` is a thin, dependency-light wrapper around `ansible-playbook`. It
+exists so an unattended run leaves behind exactly what the viewer needs and never
+trips over itself:
+
+- **Runs your playbook** with an optional inventory `--limit` — it builds
+  `ansible-playbook <playbook> [--limit <pattern>]` and runs it with
+  `cwd = ansible_home` and `ANSIBLE_FORCE_COLOR=1` (so the captured log keeps its
+  colors for the Raw Log tab).
+- **Streams output live** to your terminal *and* tees it to a timestamped
+  `~/.ansible/logs/daily-YYYY-MM-DD_HH-MM-SS.log` (+ a `.err` for stderr) — the
+  exact name and shape `view-logs.py` reads. Only `PLAY RECAP` lines are buffered
+  in memory, so a multi-gigabyte run can't blow up the wrapper.
+- **Won't overlap itself** — a `flock` on `/tmp/ansible-daily.lock` makes a second
+  invocation exit immediately rather than run concurrently (safe for cron).
+- **Rotates logs** older than 30 days, and prints a Rich summary table at the end
+  (per-host ok/changed/failed, duration, log path).
+- **Notifies on failure only** — a non-zero exit, any failed/unreachable host, or
+  no `PLAY RECAP` at all (ansible crashed) POSTs a one-line summary to Discord if a
+  webhook is configured; successful runs stay silent. It always exits with
+  ansible's own exit code, and a notify/network hiccup never changes that.
+
+### Using it with your own playbook
+
+Point it at your repo and playbook in `~/.config/ansible-log-viewer/config.toml`:
+
+```toml
+ansible_home = "~/infra"             # your repo (contains playbooks/ + inventory/)
+playbook     = "playbooks/site.yml"  # relative to ansible_home, or an absolute path
+limit        = "all:!switches"       # optional; omit or "" = no --limit (all hosts)
 ```
 
-Runs `playbook` (with an optional `--limit` from config) under
-`ansible-playbook`, streaming output to your terminal *and* to
-`~/.ansible/logs/daily-<timestamp>.log`. A second invocation while one is
-running exits immediately (flock). Logs older than 30 days are pruned. On
-failure — non-zero exit, any failed/unreachable host, or no `PLAY RECAP` at all
-— it POSTs a one-line summary to Discord if a webhook is configured; successful
-runs are silent. Run it from cron/systemd for an unattended nightly converge.
+With no config at all it defaults to `ansible_home = .` (current directory) and
+`playbook = playbooks/daily.yml`, so dropping the script into your repo root and
+running `./run-daily.py` from there just works. `playbook` and `limit` are
+config-only (this script is meant to be your *one* scheduled converge); for an
+ad-hoc run against something else, just call `ansible-playbook` directly, or point
+at a different repo for a one-off with `ALV_HOME=~/other ./run-daily.py`.
+
+**Several scheduled playbooks?** Give each its own config + log dir and select with
+`$ALV_CONFIG`, then point the viewer at the matching `log_dir`:
+
+```bash
+ALV_CONFIG=~/.config/ansible-log-viewer/patching.toml ./run-daily.py
+ALV_CONFIG=~/.config/ansible-log-viewer/certs.toml    ./run-daily.py
+# view one set:  ALV_LOG_DIR=~/.ansible/logs/patching ./view-logs.py
+```
+
+### Failure notifications
+
+Set a webhook in `[notify]` (or the `$DISCORD_WEBHOOK_URL` env var); leave both
+unset to disable. `name` is the bot username / title prefix:
+
+```toml
+[notify]
+discord_webhook_url = "https://discord.com/api/webhooks/…"
+name = "infra-nightly"
+```
+
+### Scheduling
+
+`run-daily.py` runs via `uv`, so cron/systemd need `uv` on `PATH` (or use its
+absolute path). `ansible_home` comes from config, so no `cd` is required.
+
+cron:
+
+```cron
+0 3 * * *  uv run ~/git/ansible-log-viewer/run-daily.py >> ~/.ansible/cron.log 2>&1
+```
+
+systemd user timer (survives reboots, journald logging):
+
+```ini
+# ~/.config/systemd/user/ansible-daily.service
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/uv run %h/git/ansible-log-viewer/run-daily.py
+
+# ~/.config/systemd/user/ansible-daily.timer
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+Enable with `systemctl --user enable --now ansible-daily.timer`; then
+`view-logs.py` gives you the history the next morning.
 
 ## The fact store (optional)
 

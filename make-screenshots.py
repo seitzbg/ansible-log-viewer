@@ -32,107 +32,84 @@ sys.modules["view_logs"] = view_logs
 spec.loader.exec_module(view_logs)
 
 AnsibleLogViewerApp = view_logs.AnsibleLogViewerApp
-_THEMES = view_logs._THEMES
+HostLogModal = view_logs.HostLogModal
+RawLogTab = view_logs.RawLogTab
 
 from textual.widgets import ListView, TabbedContent
 
 OUT = Path(__file__).parent / "screenshots"
 OUT.mkdir(exist_ok=True)
 
+# Terminal sizes are kept modest on purpose: a tall/wide capture exports a huge
+# SVG that GitHub then shrinks to the README column, making the text unreadable.
+# Most screens read well at ~112 cols; the hosts table needs more width for its
+# fact columns, so it gets its own size.
+SIMPLE = (112, 32)   # summary / tasks / facts / warnings / themes
+WIDE = (190, 30)     # hosts table (extra columns: distro / version / kernel …)
+TALL = (122, 34)     # raw log / host-log modal (more rows of content)
+
+# Run-list indices: 0 = "All Runs" aggregate, 1 = newest run (05-31, success),
+# 2 = 05-30 (partial: a failed + an unreachable host). app._runs is 0-based and
+# newest-first, so the run at list index N is app._runs[N - 1].
+
+
+async def _wait_loaded(pilot, app) -> None:
+    for _ in range(80):
+        await pilot.pause(0.05)
+        if len(app.query_one("#run-list", ListView).children) > 1:
+            return
+
+
+async def shot(filename, size, *, run_index=1, theme=None, tab="tab-summary", steps=None):
+    app = AnsibleLogViewerApp()
+    async with app.run_test(size=size) as pilot:
+        await _wait_loaded(pilot, app)
+        # the app auto-selects the newest run via call_after_refresh; let that
+        # fire before we override the selection, or it clobbers our run_index.
+        await pilot.pause(0.35)
+        if theme:
+            app._apply_theme(theme)
+            await pilot.pause(0.15)
+        app.query_one("#run-list", ListView).index = run_index
+        await pilot.pause(0.25)
+        app.query_one("#tabs", TabbedContent).active = tab
+        await pilot.pause(0.25)
+        if tab == "tab-raw":  # the raw log loads lazily on tab activation
+            app.query_one("#raw-content", RawLogTab).load(app._selected_run)
+            await pilot.pause(0.2)
+        if steps is not None:
+            await steps(pilot, app)
+            await pilot.pause(0.3)
+        (OUT / filename).write_text(app.export_screenshot())
+        print("✓ ", filename)
+
+
+async def _open_host_modal(pilot, app):
+    # drill into the failed db01 host on the 05-30 partial run
+    app.push_screen(HostLogModal("db01.example.net", app._runs[1]))
+    await pilot.pause(0.4)
+
+
+async def _open_theme_switcher(pilot, app):
+    await pilot.press("t")
+    await pilot.pause(0.3)
+
 
 async def take_screenshots() -> None:
-    async with AnsibleLogViewerApp().run_test(size=(232, 48)) as pilot:
-        app = pilot.app
-
-        # Wait for runs to load and the list to populate
-        await pilot.pause(0.5)
-        await pilot.pause(0.5)
-
-        lv = app.query_one("#run-list", ListView)
-
-        # ── 1. Summary – newest run ───────────────────────────────────────────
-        # The newest run is already selected (index 1) after load
-        await pilot.pause(0.3)
-        svg = app.export_screenshot()
-        (OUT / "01-summary-run.svg").write_text(svg)
-        print("✓  01-summary-run.svg")
-
-        # ── 2. Hosts tab ──────────────────────────────────────────────────────
-        await pilot.press("]")           # next tab → Hosts
-        await pilot.pause(0.2)
-        svg = app.export_screenshot()
-        (OUT / "02-hosts-tab.svg").write_text(svg)
-        print("✓  02-hosts-tab.svg")
-
-        # ── 3. Tasks tab ──────────────────────────────────────────────────────
-        await pilot.press("]")           # next tab → Tasks
-        await pilot.pause(0.2)
-        svg = app.export_screenshot()
-        (OUT / "03-tasks-tab.svg").write_text(svg)
-        print("✓  03-tasks-tab.svg")
-
-        # ── 4. Raw Log tab ────────────────────────────────────────────────────
-        await pilot.press("]")           # next tab → Raw Log
-        await pilot.pause(0.5)
-        svg = app.export_screenshot()
-        (OUT / "04-raw-log-tab.svg").write_text(svg)
-        print("✓  04-raw-log-tab.svg")
-
-        # ── 5. Warnings tab ───────────────────────────────────────────────────
-        await pilot.press("]")           # next tab → Warnings
-        await pilot.pause(0.2)
-        svg = app.export_screenshot()
-        (OUT / "05-warnings-tab.svg").write_text(svg)
-        print("✓  05-warnings-tab.svg")
-
-        # ── 6. All-Runs aggregate Summary ─────────────────────────────────────
-        await pilot.press("[")           # back to Summary tab
-        await pilot.press("[")
-        await pilot.press("[")
-        await pilot.press("[")
-        await pilot.pause(0.1)
-        lv.index = 0                     # select "All Runs"
-        await pilot.pause(0.3)
-        svg = app.export_screenshot()
-        (OUT / "06-summary-aggregate.svg").write_text(svg)
-        print("✓  06-summary-aggregate.svg")
-
-        # ── 7. Theme switcher modal ───────────────────────────────────────────
-        await pilot.press("t")
-        await pilot.pause(0.3)
-        svg = app.export_screenshot()
-        (OUT / "07-theme-switcher.svg").write_text(svg)
-        print("✓  07-theme-switcher.svg")
-        await pilot.press("escape")
-        await pilot.pause(0.1)
-
-        # ── 8. Tokyo Night theme ──────────────────────────────────────────────
-        app.call_from_thread if False else None
-        app._apply_theme("tokyonight-night")
-        await pilot.pause(0.3)
-        lv.index = 1
-        await pilot.pause(0.3)
-        svg = app.export_screenshot()
-        (OUT / "08-tokyonight-summary.svg").write_text(svg)
-        print("✓  08-tokyonight-summary.svg")
-
-        # ── 9. Cyberpunk theme ────────────────────────────────────────────────
-        app._apply_theme("cyberpunk-2077")
-        await pilot.pause(0.3)
-        svg = app.export_screenshot()
-        (OUT / "09-cyberpunk-summary.svg").write_text(svg)
-        print("✓  09-cyberpunk-summary.svg")
-
-        # ── 10. Oxocarbon hosts tab ───────────────────────────────────────────
-        app._apply_theme("oxocarbon-dark")
-        await pilot.pause(0.2)
-        await pilot.press("]")           # Hosts tab
-        await pilot.pause(0.2)
-        svg = app.export_screenshot()
-        (OUT / "10-oxocarbon-hosts.svg").write_text(svg)
-        print("✓  10-oxocarbon-hosts.svg")
-
-        print(f"\nAll screenshots saved to {OUT}/")
+    # tabs in order: Summary · Hosts · Tasks · Facts · Raw Log · Warnings
+    await shot("01-summary.svg", SIMPLE, run_index=1, tab="tab-summary")
+    await shot("02-hosts.svg", WIDE, run_index=2, tab="tab-hosts")
+    await shot("03-host-log-modal.svg", TALL, run_index=2, tab="tab-hosts", steps=_open_host_modal)
+    await shot("04-tasks.svg", SIMPLE, run_index=1, tab="tab-tasks")
+    await shot("05-facts.svg", SIMPLE, run_index=1, tab="tab-facts")
+    await shot("06-raw-log.svg", TALL, run_index=2, tab="tab-raw")
+    await shot("07-warnings.svg", SIMPLE, run_index=2, tab="tab-warnings")
+    await shot("08-all-runs.svg", SIMPLE, run_index=0, tab="tab-summary")
+    await shot("09-theme-switcher.svg", SIMPLE, run_index=1, steps=_open_theme_switcher)
+    await shot("10-theme-tokyonight.svg", SIMPLE, run_index=1, theme="tokyonight-night")
+    await shot("11-theme-cyberpunk.svg", SIMPLE, run_index=1, theme="cyberpunk-2077")
+    await shot("12-theme-oxocarbon.svg", WIDE, run_index=2, theme="oxocarbon-dark", tab="tab-hosts")
+    print(f"\nAll screenshots saved to {OUT}/")
 
 
 asyncio.run(take_screenshots())
