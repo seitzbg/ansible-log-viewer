@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
 import statistics
@@ -16,6 +18,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from rich import box
+from rich.console import Group
+from rich.table import Table
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -294,6 +299,27 @@ class FactsMirror:
 
 
 @dataclass
+class TemplateNode:
+    """One node's LXC template state from the proxmox-templates play."""
+    node: str
+    mode: str = ""
+    changed: bool = False
+    keep: list[str] = field(default_factory=list)       # present after sync (current)
+    download: list[str] = field(default_factory=list)   # basenames pulled/planned
+    remove: list[str] = field(default_factory=list)     # basenames pruned/planned
+    unmanaged: list[str] = field(default_factory=list)  # left alone (unparseable)
+    errors: list = field(default_factory=list)
+
+
+@dataclass
+class TemplateSync:
+    """Outcome of the proxmox-templates play across nodes. `present` is False
+    for logs predating that play."""
+    present: bool = False
+    nodes: list[TemplateNode] = field(default_factory=list)
+
+
+@dataclass
 class RunData:
     timestamp: datetime
     log_path: Path
@@ -305,6 +331,7 @@ class RunData:
     tasks: list[TaskStat] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     facts: FactsMirror = field(default_factory=FactsMirror)
+    templates: TemplateSync = field(default_factory=TemplateSync)
     total_hosts: int = 0
     ok_hosts: int = 0
     changed_hosts: int = 0
@@ -439,6 +466,44 @@ def parse_facts_mirror(clean: str) -> FactsMirror:
     return fm
 
 
+# ── proxmox template sync ─────────────────────────────────────────────────────
+# The proxmox-templates play emits one base64 sentinel line per node,
+# `ALV-TEMPLATES|<b64>`, wrapping the sync script's JSON (node, keep, download,
+# remove, unmanaged). Base64 so Ansible's callback quoting can't mangle it.
+_TEMPLATES_TASK = "TASK [Sync LXC templates"
+_ALV_TPL_RE = re.compile(r"ALV-TEMPLATES\|([A-Za-z0-9+/=]+)")
+
+
+def _tpl_base(s: str) -> str:
+    """Basename of a template name or volid (strip `storage:vztmpl/` and paths)."""
+    return str(s).split("/")[-1]
+
+
+def parse_templates(clean: str) -> TemplateSync:
+    ts = TemplateSync(present=_TEMPLATES_TASK in clean)
+    by_node: dict[str, TemplateNode] = {}
+    for m in _ALV_TPL_RE.finditer(clean):
+        try:
+            d = json.loads(base64.b64decode(m.group(1)).decode())
+        except Exception:
+            continue
+        node = str(d.get("node", "?"))
+        by_node[node] = TemplateNode(
+            node=node,
+            mode=str(d.get("mode", "")),
+            changed=bool(d.get("changed")),
+            keep=sorted(_tpl_base(x) for x in d.get("keep", [])),
+            download=sorted(_tpl_base(x.get("template", "")) for x in d.get("download", [])),
+            remove=sorted(_tpl_base(x.get("volid", "")) for x in d.get("remove", [])),
+            unmanaged=sorted(_tpl_base(x) for x in d.get("unmanaged", [])),
+            errors=d.get("errors", []),
+        )
+    if by_node:
+        ts.present = True
+        ts.nodes = [by_node[k] for k in sorted(by_node)]
+    return ts
+
+
 # ── fact snapshots ────────────────────────────────────────────────────────────
 # tools/facts.py writes curated `facts-snapshot/<host>.yml` files (simple
 # key: value scalars, FQDN-canonical with short-name aliases also present).
@@ -518,6 +583,7 @@ def parse_run(log_path: Path, err_path: Optional[Path]) -> RunData:
     duration_str, duration_s, tasks = parse_tasks_recap(clean)
     warnings = parse_warnings(err_path)
     facts = parse_facts_mirror(clean)
+    templates = parse_templates(clean)
     status = determine_status(hosts)
     if status == "success" and facts.degraded:
         status = "partial"
@@ -525,6 +591,7 @@ def parse_run(log_path: Path, err_path: Optional[Path]) -> RunData:
         timestamp=timestamp, log_path=log_path, err_path=err_path,
         duration=duration_str, duration_s=duration_s, status=status,
         hosts=hosts, tasks=tasks, warnings=warnings, facts=facts,
+        templates=templates,
     )
     run.total_hosts = len(hosts)
     run.ok_hosts = sum(1 for h in hosts if h.status == "ok")
@@ -899,6 +966,75 @@ class WarningsTab(VerticalScroll):
         self.query_one("#warnings-content", Static).update(content)
 
 
+_TPL_SHORT_RE = re.compile(r"^([a-z]+-[0-9][0-9.]*)-[^_]+_([^_]+)_")
+
+
+def _tpl_short(name: str) -> str:
+    """`debian-13-standard_13.6-1_amd64.tar.zst` -> `debian-13 13.6-1`."""
+    b = _tpl_base(name)
+    m = _TPL_SHORT_RE.match(b)
+    return f"{m.group(1)} {m.group(2)}" if m else b
+
+
+class TemplatesTab(VerticalScroll):
+    def compose(self) -> ComposeResult:
+        yield Static("[dim]No run selected[/dim]", id="templates-content")
+
+    def _placeholder(self, text: str) -> None:
+        self.query_one("#templates-content", Static).update(f"[dim]{text}[/dim]")
+
+    def clear(self) -> None:
+        self._placeholder("Select a run to view details")
+
+    def show_run(self, run: RunData) -> None:
+        ts = run.templates
+        if not ts.present:
+            self._placeholder("proxmox-templates play did not run for this log")
+            return
+        self.query_one("#templates-content", Static).update(self._build_group(ts))
+
+    @staticmethod
+    def _build_group(ts: TemplateSync) -> Group:
+        ok, chg, fail, dim, acc = (
+            _colors["ok"], _colors["changed"], _colors["failed"],
+            _colors["dim"], _colors["accent"],
+        )
+        table = Table(box=box.SIMPLE_HEAVY, expand=True, pad_edge=False)
+        table.add_column("Node", style="bold", no_wrap=True)
+        table.add_column("Current (2 newest majors)")
+        table.add_column("Downloaded")
+        table.add_column("Removed")
+
+        n_dl = n_rm = 0
+        for tn in ts.nodes:
+            cur = Text()
+            for t in tn.keep:
+                cur.append(_tpl_short(t) + "\n")
+            for u in tn.unmanaged:
+                cur.append(f"{_tpl_short(u)}  (unmanaged)\n", style=dim)
+            for e in tn.errors:
+                cur.append(f"error: {e}\n", style=fail)
+            if not len(cur):
+                cur = Text("—", style=dim)
+
+            dl = (Text("\n".join(_tpl_short(t) for t in tn.download), style=acc)
+                  if tn.download else Text("—", style=dim))
+            rm = (Text("\n".join(_tpl_short(t) for t in tn.remove), style=fail)
+                  if tn.remove else Text("—", style=dim))
+
+            node_style = chg if tn.changed else ok
+            table.add_row(Text(tn.node, style=node_style), cur, dl, rm)
+            n_dl += len(tn.download)
+            n_rm += len(tn.remove)
+
+        mode = ts.nodes[0].mode if ts.nodes else ""
+        mode_note = "  [dim](plan only — dry run)[/dim]" if mode == "dry-run" else ""
+        header = (f"[bold][{acc}]LXC Templates[/{acc}][/bold]   "
+                  f"[{dim}]{len(ts.nodes)} nodes · {n_dl} downloaded · "
+                  f"{n_rm} removed · {mode}[/{dim}]{mode_note}")
+        return Group(Text.from_markup(header), Text(""), table)
+
+
 class RunListPanel(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield Label(" Runs ", id="runs-label")
@@ -923,6 +1059,8 @@ class ContentPanel(Static):
                 yield TasksTab(id="tasks-content")
             with TabPane("Facts", id="tab-facts"):
                 yield FactsTab(id="facts-content")
+            with TabPane("Templates", id="tab-templates"):
+                yield TemplatesTab(id="templates-content-outer")
             with TabPane("Raw Log", id="tab-raw"):
                 yield RawLogTab(id="raw-content")
             with TabPane("Warnings", id="tab-warnings"):
@@ -933,6 +1071,7 @@ class ContentPanel(Static):
         hosts = self.query_one("#hosts-content", HostsTab)
         tasks = self.query_one("#tasks-content", TasksTab)
         facts = self.query_one("#facts-content", FactsTab)
+        templates = self.query_one("#templates-content-outer", TemplatesTab)
         raw = self.query_one("#raw-content", RawLogTab)
         warnings = self.query_one("#warnings-content-outer", WarningsTab)
 
@@ -941,6 +1080,7 @@ class ContentPanel(Static):
             hosts.clear()
             tasks.clear()
             facts.clear()
+            templates.clear()
             raw.reset()
             warnings.query_one("#warnings-content", Static).update("[dim]Select a run to view details[/dim]")
         else:
@@ -950,6 +1090,7 @@ class ContentPanel(Static):
             hosts.show_run(run)
             tasks.show_run(run)
             facts.show_run(run)
+            templates.show_run(run)
             raw.reset()
             warnings.show_run(run)
 

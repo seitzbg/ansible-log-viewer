@@ -18,7 +18,7 @@ inline dependencies — no virtualenv to manage, no `pip install` step.
 
 | Script | What it does |
 |---|---|
-| **`view-logs.py`** | The TUI. Reads `daily-*.log` files and shows a per-run summary, a sortable hosts table, task durations, raw log, warnings, and an aggregate "all runs" view with a success trend. Six themes. |
+| **`view-logs.py`** | The TUI. Reads `daily-*.log` files and shows a per-run summary, a sortable hosts table, task durations, LXC template state, raw log, warnings, and an aggregate "all runs" view with a success trend. Six themes. |
 | **`run-daily.py`** | Runs your playbook (`ansible-playbook`), streams output live, writes a timestamped `.log`/`.err` pair, holds a lock so two runs can't overlap, rotates logs older than 30 days, prints a summary table, and optionally pings Discord on failure. |
 | **`facts.py`** | *(Optional.)* Reads Ansible's jsonfile fact cache and writes curated per-host YAML snapshots that enrich the viewer's Hosts/Facts tabs (distro, kernel, CPU, RAM, IP). Can also mirror to redis and answer `list` / `host` / `query` from the CLI. |
 
@@ -116,6 +116,11 @@ search box (here, db01's failed PostgreSQL task on a partial run):
 **Facts** — outcome of the optional `facts.py mirror` step for the run:
 
 ![Facts tab](screenshots/05-facts.svg)
+
+**Templates** — per-node LXC template state from the `proxmox-templates` play:
+the current versions kept (the two newest majors per distro line) plus what this
+run downloaded and pruned. Populated from a base64 `ALV-TEMPLATES|…` summary line
+the play emits for each node; absent for logs where that play did not run.
 
 **Raw Log** — the full `ansible-playbook` output with ANSI colors preserved:
 
