@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import tomllib
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,28 +64,45 @@ LOG_DIR = _resolve_path("ALV_LOG_DIR", "log_dir", Path.home() / ".ansible" / "lo
 PLAYBOOK = _cfg.get("playbook", "playbooks/daily.yml")
 LIMIT = _cfg.get("limit", "")
 
-LOCKFILE = Path("/tmp/ansible-daily.lock")
+# Shared by every run on the host so two runs can never overlap; override
+# only to isolate a test run.
+LOCKFILE = Path(os.environ.get("ALV_LOCKFILE") or "/tmp/ansible-daily.lock")
 MAX_LOG_DAYS = 30
 
 console = Console()
 
 
-# ── discord notify ────────────────────────────────────────────────────────────
+# ── notify ────────────────────────────────────────────────────────────────────
 # Optional: set $DISCORD_WEBHOOK_URL or [notify] discord_webhook_url in config to
-# get a Discord ping when a run fails. Leave both unset to disable notifications.
+# get a Discord ping when a run fails, and $KUMA_PUSH_URL or [notify]
+# kuma_push_url to push every run's result to an Uptime Kuma push monitor.
+# Leave them unset to disable either.
 _NOTIFY = _cfg.get("notify", {}) if isinstance(_cfg.get("notify"), dict) else {}
 NOTIFY_NAME = _NOTIFY.get("name", "ansible-daily")
+# Discord sits behind Cloudflare, which rejects the default "Python-urllib/x.y"
+# User-Agent with 403 (error code 1010), so every request names itself.
+USER_AGENT = "ansible-log-viewer-run-daily"
 
 
-def _discord_webhook() -> str | None:
-    """Webhook URL from $DISCORD_WEBHOOK_URL (preferred) or [notify]
-    discord_webhook_url in config.toml. Returns None when unset, which disables
-    notifications — a notify problem must never break or mask the run."""
-    env = os.environ.get("DISCORD_WEBHOOK_URL")
+def _notify_setting(env_var: str, cfg_key: str) -> str | None:
+    """URL from the environment (preferred) or the [notify] table. Returns None
+    when unset, which disables that notifier — a notify problem must never
+    break or mask the run."""
+    env = os.environ.get(env_var)
     if env and env.strip():
         return env.strip()
-    url = _NOTIFY.get("discord_webhook_url")
+    url = _NOTIFY.get(cfg_key)
     return url.strip() if isinstance(url, str) and url.strip() else None
+
+
+def _send(req: urllib.request.Request, what: str) -> None:
+    """Best-effort HTTP request: never raises, but reports a failure on stderr
+    so an undeliverable alert shows up in the journal instead of vanishing."""
+    req.add_header("User-Agent", USER_AGENT)
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"{what} notify failed: {e}", file=sys.stderr)
 
 
 def _notify_failure(webhook, failed_hosts, counts, duration, code, logp):
@@ -102,13 +120,20 @@ def _notify_failure(webhook, failed_hosts, counts, duration, code, logp):
         body += "\n**Problem hosts:** " + ", ".join(sorted(failed_hosts)[:40])
     body += f"\n`{logp}`"
     payload = json.dumps({"username": NOTIFY_NAME, "content": body}).encode()
-    try:
-        req = urllib.request.Request(
-            webhook, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST")
-        urllib.request.urlopen(req, timeout=10)
-    except Exception:
-        pass
+    _send(urllib.request.Request(
+        webhook, data=payload,
+        headers={"Content-Type": "application/json"}, method="POST"), "discord")
+
+
+def _push_kuma(push_url, ok, msg):
+    """Report the run to an Uptime Kuma push monitor. Pushing every run (up or
+    down) lets the monitor's heartbeat interval also catch a run that never
+    happened. status/msg in the configured URL are replaced."""
+    parts = urllib.parse.urlsplit(push_url)
+    query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
+    query.update(status="up" if ok else "down", msg=msg[:250])
+    url = urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+    _send(urllib.request.Request(url), "kuma")
 
 # ── lock ──────────────────────────────────────────────────────────────────────
 lock_fh = open(LOCKFILE, "w")
@@ -139,12 +164,16 @@ stdout_lines: list[str] = []
 # stdout stream in RAM turned a large (multi-GB) log into an unkillable run, so
 # keep just recap-looking lines regardless of how much a play prints.
 _RECAP_LINE_RE = re.compile(r"unreachable=\d+\s+failed=\d+")
+# Ansible colors the failed=/unreachable= counters themselves on a problem host,
+# so the prefilter must see the line without escape codes or it drops exactly
+# the hosts that failed.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def _stream(src, dst_file, dst_stream, accumulate=None):
     for raw in src:
         line = raw.decode("utf-8", errors="replace")
         dst_file.write(line)
-        if accumulate is not None and _RECAP_LINE_RE.search(line):
+        if accumulate is not None and _RECAP_LINE_RE.search(ANSI_RE.sub("", line)):
             accumulate.append(line)
         try:
             dst_stream.write(line)
@@ -186,7 +215,6 @@ for pattern in ("daily-*.log", "daily-*.err"):
             p.unlink(missing_ok=True)
 
 # ── parse PLAY RECAP ──────────────────────────────────────────────────────────
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 RECAP_RE = re.compile(
     r"^(\S+)\s+: ok=(\d+)\s+changed=(\d+)\s+unreachable=(\d+)\s+failed=(\d+)",
     re.MULTILINE,
@@ -254,7 +282,7 @@ console.print(Panel(table, title=title, subtitle=subtitle, border_style="bright_
 # at all (crash). Success stays silent to avoid daily noise.
 run_failed = (exit_code != 0) or failed_count or unreach_count or not hosts
 if run_failed:
-    webhook = _discord_webhook()
+    webhook = _notify_setting("DISCORD_WEBHOOK_URL", "discord_webhook_url")
     if webhook:
         _notify_failure(
             webhook, failed_hosts,
@@ -262,5 +290,17 @@ if run_failed:
             duration, exit_code, log_path)
     else:
         console.print("[yellow]run failed but no Discord webhook available[/]")
+
+kuma_url = _notify_setting("KUMA_PUSH_URL", "kuma_push_url")
+if kuma_url:
+    if run_failed:
+        kuma_msg = f"exit={exit_code} {duration}"
+        if failed_hosts:
+            kuma_msg += " problem hosts: " + ", ".join(sorted(failed_hosts))
+        elif not hosts:
+            kuma_msg += " no PLAY RECAP"
+    else:
+        kuma_msg = f"ok {duration}, {changed_count} changed"
+    _push_kuma(kuma_url, not run_failed, kuma_msg)
 
 sys.exit(exit_code)

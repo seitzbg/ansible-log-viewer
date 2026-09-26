@@ -73,6 +73,8 @@ Environment variables override the file — handy for one-off runs:
 | `ALV_THEME` | `theme` |
 | `ALV_CACHE_DIR` / `ALV_SNAPSHOT_DIR` | `facts.py` cache/snapshot dirs |
 | `DISCORD_WEBHOOK_URL` | `[notify] discord_webhook_url` |
+| `KUMA_PUSH_URL` | `[notify] kuma_push_url` |
+| `ALV_LOCKFILE` | `run-daily.py`'s lock path (default `/tmp/ansible-daily.lock`) |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | the `[redis]` table |
 
 ## The viewer
@@ -178,10 +180,14 @@ trips over itself:
   invocation exit immediately rather than run concurrently (safe for cron).
 - **Rotates logs** older than 30 days, and prints a Rich summary table at the end
   (per-host ok/changed/failed, duration, log path).
-- **Notifies on failure only** — a non-zero exit, any failed/unreachable host, or
+- **Notifies on failure** — a non-zero exit, any failed/unreachable host, or
   no `PLAY RECAP` at all (ansible crashed) POSTs a one-line summary to Discord if a
-  webhook is configured; successful runs stay silent. It always exits with
-  ansible's own exit code, and a notify/network hiccup never changes that.
+  webhook is configured; successful runs stay silent there.
+- **Pushes every run to Uptime Kuma** (optional) — `up` for a clean run, `down`
+  with the problem hosts otherwise. Give the push monitor a heartbeat interval a
+  little longer than your schedule and it also alerts when a run never happens.
+- It always exits with ansible's own exit code. A notify/network hiccup never
+  changes that; it prints `<discord|kuma> notify failed: …` to stderr instead.
 
 ### Using it with your own playbook
 
@@ -211,13 +217,16 @@ ALV_CONFIG=~/.config/ansible-log-viewer/certs.toml    ./run-daily.py
 
 ### Failure notifications
 
-Set a webhook in `[notify]` (or the `$DISCORD_WEBHOOK_URL` env var); leave both
-unset to disable. `name` is the bot username / title prefix:
+Set a webhook in `[notify]` (or the `$DISCORD_WEBHOOK_URL` env var), and
+optionally an Uptime Kuma push URL (`$KUMA_PUSH_URL`); leave them unset to
+disable. `name` is the bot username / title prefix:
 
 ```toml
 [notify]
 discord_webhook_url = "https://discord.com/api/webhooks/…"
 name = "infra-nightly"
+# Uptime Kuma push monitor; status/msg in the URL are replaced on each push.
+kuma_push_url = "https://kuma.example.net/api/push/<token>?status=up&msg=OK&ping="
 ```
 
 ### Scheduling
